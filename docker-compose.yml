@@ -1,0 +1,54 @@
+# Local stack: PostgreSQL 16 + the API built from this repository.
+# `docker compose up --build` works on a clean machine; copy .env.example to .env to change anything.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-claims}
+      POSTGRES_USER: ${POSTGRES_USER:-claims}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-claims}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-claims} -d ${POSTGRES_DB:-claims}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  api:
+    build: .
+    image: dotnet-claims-engine:local
+    ports:
+      - "${API_PORT:-8080}:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
+      ConnectionStrings__Default: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-claims};Username=${POSTGRES_USER:-claims};Password=${POSTGRES_PASSWORD:-claims};Minimum Pool Size=2;Maximum Pool Size=50;Timeout=15;Command Timeout=30"
+      # Dev issuer: local demo only. Point Auth__Authority/Auth__Audience at a real OIDC issuer instead in production.
+      Auth__DevIssuer__Enabled: ${AUTH_DEV_ISSUER_ENABLED:-true}
+      Auth__DevIssuer__SigningKey: ${AUTH_DEV_SIGNING_KEY:-local-demo-only-signing-key-change-me-0123456789}
+      Idempotency__TtlHours: ${IDEMPOTENCY_TTL_HOURS:-24}
+      RateLimiting__PermitLimit: ${RATE_LIMIT_PERMITS:-60}
+      RateLimiting__WindowSeconds: ${RATE_LIMIT_WINDOW_SECONDS:-10}
+      Rules__FilingWindowDays: ${RULES_FILING_WINDOW_DAYS:-30}
+      Rules__ReviewSlaDays: ${RULES_REVIEW_SLA_DAYS:-14}
+      Rules__FrequentClaimantThreshold: ${RULES_FREQUENT_CLAIMANT_THRESHOLD:-3}
+      Rules__HighValueShareOfLimit: ${RULES_HIGH_VALUE_SHARE:-0.80}
+      Rules__AdjusterApprovalLimit: ${RULES_ADJUSTER_LIMIT:-5000}
+      Rules__SeniorAdjusterApprovalLimit: ${RULES_SENIOR_ADJUSTER_LIMIT:-50000}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /health/ready HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3 && head -n 1 <&3 | grep -q ' 200 '"]
+      interval: 10s
+      timeout: 3s
+      start_period: 30s
+      retries: 6
+    mem_limit: 512m
+    cpus: 1.0
+    restart: unless-stopped
+
+volumes:
+  pgdata:
