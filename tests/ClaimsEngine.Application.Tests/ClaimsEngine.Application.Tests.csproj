@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>ClaimsEngine.Application.Tests</RootNamespace>
+    <Threshold>90</Threshold>
+    <Include>[ClaimsEngine.Application]*</Include>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\ClaimsEngine.Application\ClaimsEngine.Application.csproj" />
+  </ItemGroup>
+
+</Project>

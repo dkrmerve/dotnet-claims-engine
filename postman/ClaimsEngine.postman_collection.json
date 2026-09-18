@@ -1,0 +1,146 @@
+{
+  "info": {
+    "name": "Claims Engine",
+    "_postman_id": "8d3f7f0a-3c0b-4a58-9a1e-claims-engine",
+    "description": "Full walkthrough: mint dev tokens, create a policy, submit a claim (idempotent), review, approve, pay, inspect history. Run top to bottom; test scripts chain the ids into the environment. Requires the compose stack (`docker compose up --build`) and the `local` environment.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [],
+  "item": [
+    {
+      "name": "0. Health",
+      "item": [
+        { "name": "Live", "request": { "method": "GET", "url": "{{baseUrl}}/health/live" } },
+        { "name": "Ready (database)", "request": { "method": "GET", "url": "{{baseUrl}}/health/ready" } },
+        { "name": "OpenAPI document", "request": { "method": "GET", "url": "{{baseUrl}}/openapi/v1.json" } }
+      ]
+    },
+    {
+      "name": "1. Tokens (dev issuer)",
+      "item": [
+        {
+          "name": "Manager token",
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('200', () => pm.response.to.have.status(200));", "pm.environment.set('managerToken', pm.response.json().accessToken);"] } }],
+          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "url": "{{baseUrl}}/auth/token", "body": { "mode": "raw", "raw": "{ \"subject\": \"manager-1\", \"role\": \"Manager\" }" } }
+        },
+        {
+          "name": "Adjuster token",
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('200', () => pm.response.to.have.status(200));", "pm.environment.set('adjusterToken', pm.response.json().accessToken);"] } }],
+          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "url": "{{baseUrl}}/auth/token", "body": { "mode": "raw", "raw": "{ \"subject\": \"adjuster-1\", \"role\": \"Adjuster\" }" } }
+        }
+      ]
+    },
+    {
+      "name": "2. Policy",
+      "item": [
+        {
+          "name": "Create policy (Manager)",
+          "event": [
+            { "listen": "prerequest", "script": { "exec": ["pm.environment.set('holderId', pm.variables.replaceIn('{{$guid}}'));", "pm.environment.set('policyNumber', 'POL-' + Date.now());"] } },
+            { "listen": "test", "script": { "exec": ["pm.test('201 with Location', () => { pm.response.to.have.status(201); pm.expect(pm.response.headers.get('Location')).to.include('/policies/'); });", "pm.environment.set('policyId', pm.response.json().id);"] } }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{managerToken}}" }] },
+            "url": "{{baseUrl}}/policies",
+            "body": { "mode": "raw", "raw": "{\n  \"policyNumber\": \"{{policyNumber}}\",\n  \"holderId\": \"{{holderId}}\",\n  \"coverageType\": \"Auto\",\n  \"coverageLimit\": 20000,\n  \"deductible\": 500,\n  \"effectiveFrom\": \"2026-01-01\",\n  \"effectiveTo\": \"2026-12-31\"\n}" }
+          }
+        },
+        {
+          "name": "Claimant token (subject = holderId)",
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('200', () => pm.response.to.have.status(200));", "pm.environment.set('claimantToken', pm.response.json().accessToken);"] } }],
+          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "url": "{{baseUrl}}/auth/token", "body": { "mode": "raw", "raw": "{ \"subject\": \"{{holderId}}\", \"role\": \"Claimant\" }" } }
+        },
+        {
+          "name": "Get policy (Claimant sees own policy)",
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('200', () => pm.response.to.have.status(200));"] } }],
+          "request": { "method": "GET", "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{claimantToken}}" }] }, "url": "{{baseUrl}}/policies/{{policyId}}" }
+        }
+      ]
+    },
+    {
+      "name": "3. Claim lifecycle",
+      "item": [
+        {
+          "name": "Submit claim (Claimant, Idempotency-Key)",
+          "event": [
+            { "listen": "prerequest", "script": { "exec": ["if (!pm.environment.get('idempotencyKey')) { pm.environment.set('idempotencyKey', pm.variables.replaceIn('{{$guid}}')); }", "const d = new Date(); d.setDate(d.getDate() - 5); pm.environment.set('incidentDate', d.toISOString().substring(0, 10));"] } },
+            { "listen": "test", "script": { "exec": ["pm.test('201 Submitted', () => { pm.response.to.have.status(201); pm.expect(pm.response.json().status).to.eql('Submitted'); });", "pm.environment.set('claimId', pm.response.json().id);"] } }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Idempotency-Key", "value": "{{idempotencyKey}}" }],
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{claimantToken}}" }] },
+            "url": "{{baseUrl}}/claims",
+            "body": { "mode": "raw", "raw": "{\n  \"policyId\": \"{{policyId}}\",\n  \"incidentDate\": \"{{incidentDate}}\",\n  \"claimedAmount\": 3000,\n  \"description\": \"Rear-ended at a traffic light.\"\n}" }
+          }
+        },
+        {
+          "name": "Submit again with the same key (replayed, same id)",
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('replayed', () => { pm.response.to.have.status(201); pm.expect(pm.response.headers.get('Idempotent-Replayed')).to.eql('true'); pm.expect(pm.response.json().id).to.eql(pm.environment.get('claimId')); });"] } }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Idempotency-Key", "value": "{{idempotencyKey}}" }],
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{claimantToken}}" }] },
+            "url": "{{baseUrl}}/claims",
+            "body": { "mode": "raw", "raw": "{\n  \"policyId\": \"{{policyId}}\",\n  \"incidentDate\": \"{{incidentDate}}\",\n  \"claimedAmount\": 3000,\n  \"description\": \"Rear-ended at a traffic light.\"\n}" }
+          }
+        },
+        {
+          "name": "Review (Adjuster)",
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('UnderReview', () => pm.expect(pm.response.json().status).to.eql('UnderReview'));"] } }],
+          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adjusterToken}}" }] }, "url": "{{baseUrl}}/claims/{{claimId}}/review", "body": { "mode": "raw", "raw": "{ \"note\": \"Photos and police report received.\" }" } }
+        },
+        {
+          "name": "Approve (Adjuster, payout 2500 <= 5000)",
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Approved', () => { pm.expect(pm.response.json().status).to.eql('Approved'); pm.expect(pm.response.json().approvedPayout.amount).to.eql(2500); });"] } }],
+          "request": { "method": "POST", "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adjusterToken}}" }] }, "url": "{{baseUrl}}/claims/{{claimId}}/approve" }
+        },
+        {
+          "name": "Pay (Manager)",
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Paid', () => pm.expect(pm.response.json().status).to.eql('Paid'));"] } }],
+          "request": { "method": "POST", "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{managerToken}}" }] }, "url": "{{baseUrl}}/claims/{{claimId}}/pay" }
+        },
+        {
+          "name": "Pay again (409 invalid_transition)",
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('409 invalid_transition', () => { pm.response.to.have.status(409); pm.expect(pm.response.json().code).to.eql('invalid_transition'); });"] } }],
+          "request": { "method": "POST", "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{managerToken}}" }] }, "url": "{{baseUrl}}/claims/{{claimId}}/pay" }
+        },
+        {
+          "name": "History (audit trail)",
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('4 entries', () => pm.expect(pm.response.json().length).to.eql(4));"] } }],
+          "request": { "method": "GET", "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{claimantToken}}" }] }, "url": "{{baseUrl}}/claims/{{claimId}}/history" }
+        },
+        {
+          "name": "List claims for the policy (paged)",
+          "request": { "method": "GET", "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{managerToken}}" }] }, "url": "{{baseUrl}}/claims?policyId={{policyId}}&page=1&pageSize=20" }
+        },
+        {
+          "name": "Overdue reviews (Adjuster+)",
+          "request": { "method": "GET", "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adjusterToken}}" }] }, "url": "{{baseUrl}}/claims/overdue" }
+        }
+      ]
+    },
+    {
+      "name": "4. Error catalog samples",
+      "item": [
+        {
+          "name": "No token -> 401 unauthenticated",
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('401', () => { pm.response.to.have.status(401); pm.expect(pm.response.json().code).to.eql('unauthenticated'); });"] } }],
+          "request": { "method": "GET", "url": "{{baseUrl}}/claims" }
+        },
+        {
+          "name": "Claimant pays -> 403 forbidden_role",
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('403', () => { pm.response.to.have.status(403); pm.expect(pm.response.json().code).to.eql('forbidden_role'); });"] } }],
+          "request": { "method": "POST", "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{claimantToken}}" }] }, "url": "{{baseUrl}}/claims/{{claimId}}/pay" }
+        },
+        {
+          "name": "Empty body -> 400 with errors dictionary",
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('400', () => { pm.response.to.have.status(400); pm.expect(pm.response.json().errors).to.have.property('policyNumber'); });"] } }],
+          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{managerToken}}" }] }, "url": "{{baseUrl}}/policies", "body": { "mode": "raw", "raw": "{}" } }
+        }
+      ]
+    }
+  ]
+}
