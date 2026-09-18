@@ -37,6 +37,11 @@ public sealed class SubmitClaimHandler(
     public async Task<SubmitClaimResult> HandleAsync(SubmitClaimCommand command, CancellationToken cancellationToken = default)
     {
         var key = string.IsNullOrWhiteSpace(command.IdempotencyKey) ? null : command.IdempotencyKey.Trim();
+        if (key is { Length: > IdempotencyRecord.MaxKeyLength })
+        {
+            throw new ValidationException($"Idempotency-Key must be at most {IdempotencyRecord.MaxKeyLength} characters.");
+        }
+
         var payloadHash = key is null ? null : HashPayload(command);
 
         try

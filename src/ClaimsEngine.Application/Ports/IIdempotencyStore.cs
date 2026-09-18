@@ -8,6 +8,9 @@ namespace ClaimsEngine.Application.Ports;
 /// </summary>
 public sealed class IdempotencyRecord
 {
+    /// <summary>Longest accepted Idempotency-Key; also the width of the column that stores it.</summary>
+    public const int MaxKeyLength = 128;
+
     // EF Core materialisation.
     private IdempotencyRecord()
     {

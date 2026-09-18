@@ -38,6 +38,7 @@ and is unit-tested by `ErrorMapperTests` (see `docs/TEST-CATALOG.md`).
 | `invalid_transition` | 409 | Domain `InvalidTransitionException` | The claim state machine (rule 4) does not allow the move: approve before review, pay before approve, anything after Paid/Rejected/Withdrawn, withdraw after approval. |
 | `investigation_pending` | 409 | Domain `InvalidTransitionException` | Approving a claim that carries the `RequiresInvestigation` flag (rule 6). |
 | `flag_not_set` | 409 | Domain `InvalidTransitionException` | Clearing the flag on a claim that is not flagged. |
+| `limit_not_exhausted` | 409 | Domain `InvalidTransitionException` | Rejecting an Approved claim whose payout still fits the policy year's limit (rule 7's exit is only for unpayable approvals); pay it instead. |
 | `concurrency_conflict` | 409 | Infrastructure unit of work (`ConcurrencyException`) | Another request changed the claim or policy between load and save (application `Version` and PostgreSQL `xmin` both act as tokens). Reload and retry. |
 | `duplicate_key` | 409 | Infrastructure unit of work (`DuplicateKeyException`) | A unique index rejected the write, for example a duplicate policy number. (The submit path resolves idempotency-key races internally and never exposes this code for them.) |
 | `payload_too_large` | 413 | `RequestBodyLimitMiddleware` / Kestrel | Request body over 64 KiB. |

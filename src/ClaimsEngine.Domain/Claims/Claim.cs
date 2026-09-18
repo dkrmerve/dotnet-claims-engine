@@ -6,12 +6,20 @@ namespace ClaimsEngine.Domain.Claims;
 
 /// <summary>
 /// A request for money under a policy. The aggregate owns the full lifecycle
-/// (Submitted -> UnderReview -> Approved -> Paid, with Rejected / Withdrawn as exits)
+/// (Submitted -> UnderReview -> Approved -> Paid, with Rejected / Withdrawn as exits and
+/// Approved -> Rejected only for an approval the annual limit can no longer honour)
 /// and every business rule that concerns a single claim.
 /// </summary>
 public sealed class Claim
 {
     public const int MaxDescriptionLength = 2_000;
+
+    /// <summary>
+    /// Longest note a caller may attach to a transition. Lower than
+    /// <see cref="ClaimHistoryEntry.MaxNoteLength"/> because the audit line wraps the note
+    /// ("Rejected (InsufficientEvidence): ...", "Investigation flag cleared: ...").
+    /// </summary>
+    public const int MaxNoteLength = 1_900;
 
     private readonly List<ClaimHistoryEntry> _history = [];
 
@@ -37,7 +45,7 @@ public sealed class Claim
     /// <summary>Rule 3: what the policy would pay for this claim, fixed at submission.</summary>
     public Money EligiblePayout { get; private set; }
 
-    /// <summary>Set on approval; equals <see cref="EligiblePayout"/>.</summary>
+    /// <summary>Set on approval; equals <see cref="EligiblePayout"/>. Cleared again by <see cref="RejectUnpayable"/>.</summary>
     public Money? ApprovedPayout { get; private set; }
 
     public ClaimFlag Flag { get; private set; }
@@ -166,6 +174,7 @@ public sealed class Claim
     {
         EnsureTransition(ClaimStatus.UnderReview, ClaimStatus.Submitted);
         EnsureAdjusterOrAbove(actor, "start a review");
+        EnsureNoteFits(note);
 
         ReviewStartedAt = now;
         Transition(actor, ClaimStatus.UnderReview, note ?? "Review started.", now);
@@ -175,6 +184,7 @@ public sealed class Claim
     public void Approve(ActorRole actor, ClaimRules rules, DateTimeOffset now, string? note = null)
     {
         EnsureTransition(ClaimStatus.Approved, ClaimStatus.UnderReview);
+        EnsureNoteFits(note);
 
         if (!ApprovalAuthority.CanApprove(actor, EligiblePayout, rules))
         {
@@ -208,6 +218,8 @@ public sealed class Claim
             throw new ValidationException("Rejection reason Other requires an explanatory note.", ErrorCodes.RejectionNoteRequired);
         }
 
+        EnsureNoteFits(note);
+
         RejectionReason = reason;
         var text = string.IsNullOrWhiteSpace(note) ? $"Rejected: {reason}." : $"Rejected ({reason}): {note.Trim()}";
         Transition(actor, ClaimStatus.Rejected, text, now);
@@ -229,8 +241,7 @@ public sealed class Claim
         }
 
         var payout = ApprovedPayout ?? throw new InvalidTransitionException("Approved claim has no approved payout.");
-        var projectedTotal = alreadyPaidInPolicyYear.Amount + payout.Amount;
-        if (projectedTotal > policy.CoverageLimit.Amount)
+        if (ExceedsLimit(policy, payout, alreadyPaidInPolicyYear, out var projectedTotal))
         {
             throw new RuleViolationException(
                 ErrorCodes.LimitExhausted,
@@ -243,6 +254,56 @@ public sealed class Claim
         Transition(actor, ClaimStatus.Paid, $"Paid {payout}.", now);
     }
 
+    /// <summary>
+    /// Approved -> Rejected (LimitExhausted). Rule 7's exit: approvals do not reserve budget, so a
+    /// claim approved while the limit still had room can become unpayable once other claims of the
+    /// same policy year are paid. Only a Manager may close it, only as LimitExhausted, and only
+    /// while <see cref="Pay"/> would really be refused; a payable approval must be paid instead.
+    /// </summary>
+    public void RejectUnpayable(
+        ActorRole actor,
+        RejectionReason reason,
+        string? note,
+        Policy policy,
+        Money alreadyPaidInPolicyYear,
+        DateTimeOffset now)
+    {
+        EnsureTransition(ClaimStatus.Rejected, ClaimStatus.Approved);
+
+        if (actor != ActorRole.Manager)
+        {
+            throw new InsufficientAuthorityException($"Only a Manager can reject an approved claim; actor is {actor}.");
+        }
+
+        if (reason != Claims.RejectionReason.LimitExhausted)
+        {
+            throw new InvalidTransitionException(
+                $"An approved claim can only be rejected as {Claims.RejectionReason.LimitExhausted}; reason was {reason}.");
+        }
+
+        if (policy.Id != PolicyId)
+        {
+            throw new ValidationException("The supplied policy does not belong to this claim.");
+        }
+
+        EnsureNoteFits(note);
+
+        var payout = ApprovedPayout ?? throw new InvalidTransitionException("Approved claim has no approved payout.");
+        if (!ExceedsLimit(policy, payout, alreadyPaidInPolicyYear, out var projectedTotal))
+        {
+            throw new InvalidTransitionException(
+                $"Paying {payout} would bring this policy year's total to {projectedTotal:0.00} {payout.Currency}, " +
+                $"within the coverage limit {policy.CoverageLimit}; the claim is payable and cannot be rejected.",
+                ErrorCodes.LimitNotExhausted);
+        }
+
+        RejectionReason = reason;
+        ApprovedPayout = null;
+        // Kept short: with the largest amount and the longest note the line still fits ClaimHistoryEntry.MaxNoteLength.
+        var text = $"Rejected ({reason}): {payout} no longer fits the annual limit.";
+        Transition(actor, ClaimStatus.Rejected, string.IsNullOrWhiteSpace(note) ? text : $"{text} {note.Trim()}", now);
+    }
+
     /// <summary>Submitted|UnderReview -> Withdrawn. Only the claimant.</summary>
     public void Withdraw(ActorRole actor, DateTimeOffset now, string? note = null)
     {
@@ -252,6 +313,8 @@ public sealed class Claim
         {
             throw new InsufficientAuthorityException($"Only the Claimant can withdraw a claim; actor is {actor}.");
         }
+
+        EnsureNoteFits(note);
 
         Transition(actor, ClaimStatus.Withdrawn, note ?? "Withdrawn by claimant.", now);
     }
@@ -268,6 +331,8 @@ public sealed class Claim
         {
             throw new ValidationException("Clearing an investigation flag requires a note explaining the outcome.", ErrorCodes.NoteRequired);
         }
+
+        EnsureNoteFits(note);
 
         if (Status.IsTerminal())
         {
@@ -313,6 +378,20 @@ public sealed class Claim
         if (!actor.IsAdjusterOrAbove())
         {
             throw new InsufficientAuthorityException($"Only Adjuster, SeniorAdjuster or Manager can {action}; actor is {actor}.");
+        }
+    }
+
+    private static bool ExceedsLimit(Policy policy, Money payout, Money alreadyPaidInPolicyYear, out decimal projectedTotal)
+    {
+        projectedTotal = alreadyPaidInPolicyYear.Amount + payout.Amount;
+        return projectedTotal > policy.CoverageLimit.Amount;
+    }
+
+    private static void EnsureNoteFits(string? note)
+    {
+        if (note is { Length: > MaxNoteLength })
+        {
+            throw new ValidationException($"note must be at most {MaxNoteLength} characters.");
         }
     }
 
