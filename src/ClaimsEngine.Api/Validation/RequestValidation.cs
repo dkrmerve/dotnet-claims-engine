@@ -1,5 +1,6 @@
 using System.Globalization;
 using ClaimsEngine.Api.Errors;
+using ClaimsEngine.Domain.Shared;
 
 namespace ClaimsEngine.Api.Validation;
 
@@ -70,6 +71,9 @@ public static class EnumNames
 public static class Amounts
 {
     public static bool HasAtMostTwoDecimals(decimal value) => decimal.Round(value, 2) == value;
+
+    /// <summary><see cref="Money.MaxAmount"/> for error messages, culture-invariant.</summary>
+    public static string Max => Money.MaxAmount.ToString(CultureInfo.InvariantCulture);
 }
 
 /// <summary>Accepts a calendar date or an ISO-8601 date-time with offset; the latter is normalised to the UTC day.</summary>

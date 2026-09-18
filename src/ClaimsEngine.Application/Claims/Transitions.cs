@@ -43,7 +43,12 @@ public sealed class ApproveClaimHandler(IClaimRepository claims, IUnitOfWork uni
 
 public sealed record RejectClaimCommand(Guid ClaimId, Actor Actor, RejectionReason Reason, string? Note);
 
-public sealed class RejectClaimHandler(IClaimRepository claims, IUnitOfWork unitOfWork, IClock clock)
+/// <summary>
+/// Rule 9, plus rule 7's exit: an Approved claim that the annual limit can no longer honour is
+/// closed through <see cref="Claim.RejectUnpayable"/>, judged on the same fresh paid total that
+/// <see cref="PayClaimHandler"/> would see. The claim's version makes a racing pay and reject conflict.
+/// </summary>
+public sealed class RejectClaimHandler(IClaimRepository claims, IPolicyRepository policies, IUnitOfWork unitOfWork, IClock clock)
 {
     public Task<ClaimDto> HandleAsync(RejectClaimCommand command, CancellationToken cancellationToken = default) =>
         unitOfWork.RunInTransactionAsync(
@@ -51,7 +56,19 @@ public sealed class RejectClaimHandler(IClaimRepository claims, IUnitOfWork unit
             {
                 var claim = await claims.GetAsync(new ClaimId(command.ClaimId), token)
                     ?? throw new NotFoundException("Claim", command.ClaimId);
-                claim.Reject(command.Actor.Role, command.Reason, command.Note, clock.UtcNow);
+
+                if (claim.Status != ClaimStatus.Approved)
+                {
+                    claim.Reject(command.Actor.Role, command.Reason, command.Note, clock.UtcNow);
+                    return ClaimDto.From(claim);
+                }
+
+                var policy = await policies.GetAsync(claim.PolicyId, token)
+                    ?? throw new NotFoundException("Policy", claim.PolicyId);
+                var policyYear = policy.PolicyYearContaining(claim.IncidentDate);
+                var alreadyPaid = await claims.SumPaidPayoutsAsync(policy.Id, policyYear, claim.Id, token);
+
+                claim.RejectUnpayable(command.Actor.Role, command.Reason, command.Note, policy, alreadyPaid, clock.UtcNow);
                 return ClaimDto.From(claim);
             },
             cancellationToken);

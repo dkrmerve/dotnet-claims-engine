@@ -55,10 +55,10 @@ keeps a full history of who did what and when. Every decision it takes is writte
 | 1 | Policy must be `Active` and the incident date inside `[effectiveFrom, effectiveTo]` (inclusive) | `Policy.EnsureEligibleFor` | `422 policy_not_eligible` |
 | 2 | Filing window: `filedAt - incidentDate(00:00 UTC)` must be <= 30 days; exactly 30 days is fine, 30 days + 1 s is late | `Claim.Submit` | `201`, claim `Rejected` with `LateFiling` |
 | 3 | `eligiblePayout = min(claimed - deductible, coverageLimit - paidInPolicyYear)`; `claimed` must be > 0 | `Claim.Submit` | `<= 0` -> `201` with `BelowDeductible` / `LimitExhausted`; `claimed <= 0` -> `400` |
-| 4 | State machine `Submitted -> UnderReview -> Approved -> Paid`; `Submitted\|UnderReview -> Rejected\|Withdrawn`; Paid/Rejected/Withdrawn are terminal | `Claim.EnsureTransition` | `409 invalid_transition` |
+| 4 | State machine `Submitted -> UnderReview -> Approved -> Paid`; `Submitted\|UnderReview -> Rejected\|Withdrawn`; `Approved -> Rejected` only through rule 7's exit; Paid/Rejected/Withdrawn are terminal | `Claim.EnsureTransition` | `409 invalid_transition` |
 | 5 | Approval authority by payout: <= 5 000 Adjuster+, <= 50 000 SeniorAdjuster+, above Manager (limits inclusive) | `ApprovalAuthority` | `403 insufficient_authority` |
 | 6 | Flag `RequiresInvestigation` when the holder has >= 3 other non-withdrawn claims in the last 365 days or `claimed >= 80 %` of the limit; flagged claims cannot be approved until a Manager clears the flag with a note | `Claim.Submit`, `Claim.Approve`, `Claim.ClearFlag` | `409 investigation_pending`, `400 note_required`, `409 flag_not_set` |
-| 7 | Paid payouts per policy year (anchored at `effectiveFrom`, not the calendar year) never exceed the limit; re-checked at pay time with versioned claim *and* policy rows | `Claim.Pay`, `Policy.RecordPayout` | `422 limit_exhausted`, `409 concurrency_conflict` |
+| 7 | Paid payouts per policy year (anchored at `effectiveFrom`, not the calendar year) never exceed the limit; re-checked at pay time with versioned claim *and* policy rows. An Approved claim the limit can no longer honour is closed by a Manager as `Approved -> Rejected (LimitExhausted)`; a claim that is still payable cannot be | `Claim.Pay`, `Claim.RejectUnpayable`, `Policy.RecordPayout` | `422 limit_exhausted`, `409 limit_not_exhausted`, `409 concurrency_conflict` |
 | 8 | Review SLA: `UnderReview` for more than 14 days (strictly) is overdue, measured from the moment the claim entered review | `ListOverdueClaimsHandler` | `GET /claims/overdue` |
 | 9 | Rejection needs a reason from `LateFiling, BelowDeductible, LimitExhausted, NotCovered, Fraud, InsufficientEvidence, Other`; `Other` needs a note | `Claim.Reject` + validator | `400 request_validation_failed` / `rejection_note_required` |
 | 10 | Idempotent submit: same key + same payload -> the original `201` (header `Idempotent-Replayed: true`); same key + different payload -> `422`; keys are scoped to the caller (`sub`), expire after 24 h and are swept afterwards; concurrent submits with one key (new or expired) create exactly one claim | `SubmitClaimHandler` + composite unique key + `Version` token | `422 idempotency_key_reused` |
@@ -187,7 +187,7 @@ normalised to the UTC calendar day. Timestamps are UTC `DateTimeOffset`s.
 | `GET` | `/claims/{id}`, `/claims/{id}/history` | any role (Claimant: own only) | Claim and audit trail |
 | `POST` | `/claims/{id}/review` | Adjuster+ | `Submitted -> UnderReview`, optional `{ "note" }` |
 | `POST` | `/claims/{id}/approve` | Adjuster+ (amount authority applies) | `UnderReview -> Approved` |
-| `POST` | `/claims/{id}/reject` | Adjuster+ | `{ "reason", "note"? }` |
+| `POST` | `/claims/{id}/reject` | Adjuster+ (Approved claims: Manager, `LimitExhausted` only) | `{ "reason", "note"? }` |
 | `POST` | `/claims/{id}/pay` | Manager | `Approved -> Paid`, limit re-check |
 | `POST` | `/claims/{id}/withdraw` | Claimant (owner) | `Submitted\|UnderReview -> Withdrawn` |
 | `POST` | `/claims/{id}/clear-flag` | Manager | `{ "note" }` required |
@@ -270,7 +270,7 @@ Full descriptions in [`docs/errors.md`](docs/errors.md); the mapping lives in on
 | `not_owner` | 403 | Claimant reaching someone else's policy or claim |
 | `not_found` | 404 | Unknown id, non-GUID id, unknown route |
 | `method_not_allowed` | 405 | Wrong HTTP method |
-| `invalid_transition`, `investigation_pending`, `flag_not_set` | 409 | State machine and flag rules |
+| `invalid_transition`, `investigation_pending`, `flag_not_set`, `limit_not_exhausted` | 409 | State machine, flag rules and rule 7's exit |
 | `concurrency_conflict` | 409 | Row changed between load and save (`Version` / `xmin`) |
 | `duplicate_key` | 409 | Unique index violation (for example a duplicate policy number) |
 | `payload_too_large` | 413 | Body over 64 KiB |
@@ -295,7 +295,7 @@ Each bullet names the test that proves it (full list: [`docs/TEST-CATALOG.md`](d
 - **Concurrency** - two real parallel pays on one claim, two parallel pays on one policy that together exceed the limit, two contexts loading the same row, `xmin` changing on every write: `Concurrency_ParallelPaysOnSameClaim_ExactlyOneSucceeds`, `Concurrency_ParallelPaysOnOnePolicyExceedingLimit_NeverOvershoot`, `Concurrency_TwoContextsLoadSameClaim_SecondSaveIsConcurrencyConflict`, `Concurrency_XminChangesOnEveryWrite`.
 - **Atomicity** - a failure after the first write inside pay or submit persists nothing: `Atomicity_PayFailingAfterFirstWrite_PersistsNothing`, `Atomicity_SubmitFailingAfterFirstWrite_PersistsNeitherClaimNorIdempotencyKey`.
 - **Database constraints, bypassing the domain** - unique idempotency key, check constraints, FK with `ON DELETE RESTRICT`: `Constraint_DuplicateIdempotencyKey_IsRejectedByUniqueIndex`, `Constraint_NegativeClaimedAmount_IsRejectedByCheckConstraint`, `Constraint_DeductibleAboveLimit_IsRejectedByCheckConstraint`, `Constraint_PolicyWithClaims_CannotBeDeleted_OnDeleteRestrict`, `Constraint_ClaimForUnknownPolicy_IsRejectedByForeignKey`.
-- **Input hardening** - unknown enum lists allowed values, description > 2 000, empty body / malformed JSON are 400 not 500, non-GUID route id is 404, body > 64 KiB is 413, wrong media type 415, missing token 401, a legacy role header is ignored: `CreatePolicy_UnknownEnum_ListsAllowedValues`, `Submit_DescriptionOver2000Chars_Is400`, `Request_MalformedJson_Is400InvalidRequest_Not500`, `Request_EmptyBody_Is400`, `Route_NonGuidId_Is404WithProblem`, `Request_BodyOver64KiB_Is413PayloadTooLarge`, `Request_UnsupportedMediaType_Is415WithProblem`, `Auth_NoToken_Is401Unauthenticated`, `Auth_StrayRoleHeaderOnGet_IsIgnored`.
+- **Input hardening** - unknown enum lists allowed values, description > 2 000, note > 1 900, `Idempotency-Key` > 128, amounts beyond `numeric(18,2)`, a `page` whose offset overflows, empty body / malformed JSON are 400 not 500, non-GUID route id is 404, body > 64 KiB is 413, wrong media type 415, missing token 401, a legacy role header is ignored: `CreatePolicy_UnknownEnum_ListsAllowedValues`, `Submit_DescriptionOver2000Chars_Is400`, `InputBoundsTests`, `Request_MalformedJson_Is400InvalidRequest_Not500`, `Request_EmptyBody_Is400`, `Route_NonGuidId_Is404WithProblem`, `Request_BodyOver64KiB_Is413PayloadTooLarge`, `Request_UnsupportedMediaType_Is415WithProblem`, `Auth_NoToken_Is401Unauthenticated`, `Auth_StrayRoleHeaderOnGet_IsIgnored`.
 - **Overdue** - exactly 14 days not overdue, 14 days + 1 s overdue, measured from review start not filing: `Overdue_Exactly14Days_IsNotOverdue_14DaysPlusOneSecond_Is`, `Overdue_UsesReviewStart_NotFiledAt`, `Overdue_Exactly14Days_NotListed_14DaysPlusOneSecond_Listed_FromReviewStart`.
 - **Time** - a `+03:00` incident timestamp is normalised to the UTC day; non-ISO date strings rejected; all stored instants are UTC: `Submit_IncidentDateTimeWithPlus3Offset_IsNormalisedToUtcDay`, `IncidentDates_ParsesIsoFormsToUtcDay`, `IncidentDates_RejectsNonIsoForms`, `Submit_HappyPath_Returns201WithLocation_AndIsReadable` (asserts a zero offset).
 - **Pagination** - `pageSize` 0 and 101 are 400, defaults documented, Claimant scope: `List_InvalidQuery_Is400WithFieldError`, `List_FiltersPagesAndScopesToClaimant`, `ListClaims_InvalidPaging_IsValidationError`.
@@ -416,7 +416,7 @@ tracking for aggregates they modify). `/health/ready` executes a real `SELECT 1`
 
 - **"30 days"** is measured from 00:00 UTC on the incident date to the filing instant (the brief asked for "30 days + 1 second" to be late).
 - **Policy year** = 12 months from each anniversary of `effectiveFrom`; the last one is cut at `effectiveTo`. Anniversaries of 29 February fall on 28 February.
-- **"Already paid"** counts `Paid` claims only; approved-but-unpaid claims do not reserve budget, which is why `pay` re-checks the limit.
+- **"Already paid"** counts `Paid` claims only; approved-but-unpaid claims do not reserve budget, which is why `pay` re-checks the limit. An approval that lost that race is not stuck: a Manager rejects it as `LimitExhausted` (`409 limit_not_exhausted` while it could still be paid).
 - **Flag evaluation happens before auto-rejection**, so a late, high-value claim is both `Rejected` and flagged in the audit trail.
 - **State before rights:** a transition that is impossible in the current state answers `409` even to an unauthorised actor; authority is checked next, then the flag.
 - **`pay` requires Manager** (the brief allowed a `Finance` role; one role fewer keeps the demo readable). Adjusters may file claims on behalf of holders; Claimants only on their own.

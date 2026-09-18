@@ -3,6 +3,7 @@ using ClaimsEngine.Api.Contracts;
 using ClaimsEngine.Application.Claims;
 using ClaimsEngine.Domain.Claims;
 using ClaimsEngine.Domain.Policies;
+using ClaimsEngine.Domain.Shared;
 
 namespace ClaimsEngine.Api.Validation;
 
@@ -44,6 +45,10 @@ public sealed class CreatePolicyRequestValidator : IRequestValidator<CreatePolic
         else if (!Amounts.HasAtMostTwoDecimals(limit))
         {
             errors.Add("coverageLimit", "coverageLimit must have at most two decimals.");
+        }
+        else if (limit > Money.MaxAmount)
+        {
+            errors.Add("coverageLimit", $"coverageLimit must be at most {Amounts.Max}.");
         }
 
         if (request.Deductible is not { } deductible)
@@ -108,6 +113,10 @@ public sealed class SubmitClaimRequestValidator : IRequestValidator<SubmitClaimR
         else if (!Amounts.HasAtMostTwoDecimals(amount))
         {
             errors.Add("claimedAmount", "claimedAmount must have at most two decimals.");
+        }
+        else if (amount > Money.MaxAmount)
+        {
+            errors.Add("claimedAmount", $"claimedAmount must be at most {Amounts.Max}.");
         }
 
         if (string.IsNullOrWhiteSpace(request.Description))
@@ -180,9 +189,9 @@ public sealed class ListClaimsRequestValidator : IRequestValidator<ListClaimsReq
             errors.Add("status", $"status must be one of: {EnumNames.Allowed<ClaimStatus>()}.");
         }
 
-        if (request.Page is < 1)
+        if (request.Page is < 1 or > ListClaimsHandler.MaxPage)
         {
-            errors.Add("page", "page must be at least 1.");
+            errors.Add("page", $"page must be between 1 and {ListClaimsHandler.MaxPage}.");
         }
 
         if (request.PageSize is { } size && (size < 1 || size > ListClaimsHandler.MaxPageSize))
@@ -224,9 +233,9 @@ internal static class Notes
 {
     public static void Validate(string? note, ValidationErrors errors)
     {
-        if (note is { Length: > Claim.MaxDescriptionLength })
+        if (note is { Length: > Claim.MaxNoteLength })
         {
-            errors.Add("note", $"note must be at most {Claim.MaxDescriptionLength} characters.");
+            errors.Add("note", $"note must be at most {Claim.MaxNoteLength} characters.");
         }
     }
 }

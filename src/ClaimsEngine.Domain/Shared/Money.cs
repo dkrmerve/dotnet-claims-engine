@@ -14,6 +14,9 @@ public readonly record struct Money : IComparable<Money>
 {
     public const string DefaultCurrency = "EUR";
 
+    /// <summary>Largest representable amount; matches the numeric(18,2) columns amounts are stored in.</summary>
+    public const decimal MaxAmount = 9_999_999_999_999_999.99m;
+
     private readonly string? _currency;
 
     public Money(decimal amount, string currency = DefaultCurrency)
@@ -21,6 +24,11 @@ public readonly record struct Money : IComparable<Money>
         if (amount < 0)
         {
             throw new ValidationException($"Money cannot be negative (was {amount.ToString(CultureInfo.InvariantCulture)}).");
+        }
+
+        if (amount > MaxAmount)
+        {
+            throw new ValidationException($"Money cannot exceed {MaxAmount.ToString(CultureInfo.InvariantCulture)} (was {amount.ToString(CultureInfo.InvariantCulture)}).");
         }
 
         if (decimal.Round(amount, 2) != amount)

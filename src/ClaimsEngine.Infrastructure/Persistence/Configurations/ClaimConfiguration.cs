@@ -31,7 +31,7 @@ public sealed class ClaimConfiguration : IEntityTypeConfiguration<Claim>
             history.WithOwner().HasForeignKey("ClaimId");
             history.Property<long>("Id").ValueGeneratedOnAdd();
             history.HasKey("Id");
-            history.Property(h => h.Note).HasMaxLength(Claim.MaxDescriptionLength);
+            history.Property(h => h.Note).HasMaxLength(ClaimHistoryEntry.MaxNoteLength);
             history.HasIndex("ClaimId", nameof(ClaimHistoryEntry.At));
         });
         builder.Navigation(c => c.History).UsePropertyAccessMode(PropertyAccessMode.Field);
