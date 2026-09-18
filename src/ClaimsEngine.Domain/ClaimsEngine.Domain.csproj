@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Pure domain: no package references, no framework dependencies beyond the BCL. -->
+  <PropertyGroup>
+    <RootNamespace>ClaimsEngine.Domain</RootNamespace>
+  </PropertyGroup>
+
+</Project>

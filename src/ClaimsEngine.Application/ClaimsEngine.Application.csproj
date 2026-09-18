@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Use cases and ports. Depends on the domain only; no MediatR, no framework packages. -->
+  <PropertyGroup>
+    <RootNamespace>ClaimsEngine.Application</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ClaimsEngine.Domain\ClaimsEngine.Domain.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ClaimsEngine.Application.Tests" />
+  </ItemGroup>
+
+</Project>
