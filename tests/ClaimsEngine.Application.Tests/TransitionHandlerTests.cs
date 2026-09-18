@@ -56,7 +56,7 @@ public sealed class TransitionHandlerTests
     {
         var s = new Scenario();
         var claim = s.AddClaim(s.AddPolicy());
-        var handler = new RejectClaimHandler(s.Claims, s.UnitOfWork, s.Clock);
+        var handler = new RejectClaimHandler(s.Claims, s.Policies, s.UnitOfWork, s.Clock);
 
         var dto = await handler.HandleAsync(new RejectClaimCommand(claim.Id.Value, Scenario.Adjuster, RejectionReason.NotCovered, null));
 
@@ -94,6 +94,43 @@ public sealed class TransitionHandlerTests
 
         Assert.Equal("limit_exhausted", ex.Code);
         Assert.Equal(ClaimStatus.Approved, second.Status);
+    }
+
+    [Fact]
+    public async Task Reject_ApprovedClaimTheLimitCanNoLongerHonour_IsRejectedAsLimitExhausted_ByManagerOnly()
+    {
+        var s = new Scenario();
+        var policy = s.AddPolicy(coverageLimit: 10_000m, deductible: 0m);
+        var first = s.AddClaim(policy, claimed: 7_000m, status: ClaimStatus.Approved);
+        var second = s.AddClaim(policy, claimed: 5_000m, status: ClaimStatus.Approved);
+        await new PayClaimHandler(s.Claims, s.Policies, s.UnitOfWork, s.Clock).HandleAsync(new PayClaimCommand(first.Id.Value, Scenario.Manager));
+        var handler = new RejectClaimHandler(s.Claims, s.Policies, s.UnitOfWork, s.Clock);
+
+        await Assert.ThrowsAsync<InsufficientAuthorityException>(() =>
+            handler.HandleAsync(new RejectClaimCommand(second.Id.Value, Scenario.Adjuster, RejectionReason.LimitExhausted, null)));
+        var dto = await handler.HandleAsync(new RejectClaimCommand(second.Id.Value, Scenario.Manager, RejectionReason.LimitExhausted, "holder informed"));
+
+        Assert.Equal(ClaimStatus.Rejected, dto.Status);
+        Assert.Equal(RejectionReason.LimitExhausted, dto.RejectionReason);
+        Assert.Null(dto.ApprovedPayout);
+    }
+
+    [Fact]
+    public async Task Reject_ApprovedClaimThatIsStillPayable_IsLimitNotExhausted_UnknownPolicy_IsNotFound()
+    {
+        var s = new Scenario();
+        var policy = s.AddPolicy(coverageLimit: 10_000m, deductible: 0m);
+        var claim = s.AddClaim(policy, claimed: 5_000m, status: ClaimStatus.Approved);
+        var handler = new RejectClaimHandler(s.Claims, s.Policies, s.UnitOfWork, s.Clock);
+
+        var ex = await Assert.ThrowsAsync<InvalidTransitionException>(() =>
+            handler.HandleAsync(new RejectClaimCommand(claim.Id.Value, Scenario.Manager, RejectionReason.LimitExhausted, null)));
+
+        Assert.Equal("limit_not_exhausted", ex.Code);
+        Assert.Equal(ClaimStatus.Approved, claim.Status);
+        s.Policies.Policies.Remove(policy.Id);
+        await Assert.ThrowsAsync<NotFoundException>(() =>
+            handler.HandleAsync(new RejectClaimCommand(claim.Id.Value, Scenario.Manager, RejectionReason.LimitExhausted, null)));
     }
 
     [Fact]

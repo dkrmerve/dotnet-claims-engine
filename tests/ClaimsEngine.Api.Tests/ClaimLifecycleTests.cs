@@ -170,12 +170,12 @@ public sealed class ClaimLifecycleTests(DatabaseFixture databases) : ApiTestBase
     }
 
     [Fact]
-    public async Task Reject_NoteOver2000Chars_Is400()
+    public async Task Reject_NoteOverMaxNoteLength_Is400()
     {
         var claim = await SubmitClaimAsync(await CreatePolicyAsync());
-        var problem = await (await Adjuster.PostJsonAsync($"/claims/{claim.Id}/reject", new { reason = "Fraud", note = new string('n', 2_001) })).AssertProblemAsync(HttpStatusCode.BadRequest, "request_validation_failed");
+        var problem = await (await Adjuster.PostJsonAsync($"/claims/{claim.Id}/reject", new { reason = "Fraud", note = new string('n', Claim.MaxNoteLength + 1) })).AssertProblemAsync(HttpStatusCode.BadRequest, "request_validation_failed");
         Assert.Contains("note", problem.Errors!.Keys);
-        await (await Adjuster.PostJsonAsync($"/claims/{claim.Id}/review", new { note = new string('n', 2_001) })).AssertProblemAsync(HttpStatusCode.BadRequest, "request_validation_failed");
+        await (await Adjuster.PostJsonAsync($"/claims/{claim.Id}/review", new { note = new string('n', Claim.MaxNoteLength + 1) })).AssertProblemAsync(HttpStatusCode.BadRequest, "request_validation_failed");
     }
 
     [Fact]
@@ -189,6 +189,35 @@ public sealed class ClaimLifecycleTests(DatabaseFixture databases) : ApiTestBase
         await (await Manager.PostEmptyAsync($"/claims/{second.Id}/pay")).AssertProblemAsync(HttpStatusCode.UnprocessableEntity, "limit_exhausted");
 
         Assert.Equal(ClaimStatus.Approved, (await GetClaimAsync(second.Id)).Status);
+    }
+
+    [Fact]
+    public async Task Reject_ApprovedClaimBeyondLimit_ManagerClosesItAsLimitExhausted_PayableOneIs409()
+    {
+        var policy = await CreatePolicyAsync(coverageLimit: 10_000m, deductible: 0m);
+        var first = await ApprovedClaimAsync(policy, amount: 7_000m);
+        var second = await ApprovedClaimAsync(policy, amount: 5_000m);
+        var exhausted = new { reason = nameof(RejectionReason.LimitExhausted), note = "Holder informed by letter." };
+
+        // While the first claim is unpaid the second one is still payable: no exit yet.
+        await (await Manager.PostJsonAsync($"/claims/{second.Id}/reject", exhausted)).AssertProblemAsync(HttpStatusCode.Conflict, "limit_not_exhausted");
+
+        await TransitionAsync(Manager, first.Id, "pay");
+        await (await Manager.PostEmptyAsync($"/claims/{second.Id}/pay")).AssertProblemAsync(HttpStatusCode.UnprocessableEntity, "limit_exhausted");
+
+        await (await SeniorAdjuster.PostJsonAsync($"/claims/{second.Id}/reject", exhausted)).AssertProblemAsync(HttpStatusCode.Forbidden, "insufficient_authority");
+        await (await Manager.PostJsonAsync($"/claims/{second.Id}/reject", new { reason = nameof(RejectionReason.Fraud) })).AssertProblemAsync(HttpStatusCode.Conflict, "invalid_transition");
+        var rejected = await TransitionAsync(Manager, second.Id, "reject", exhausted);
+
+        Assert.Equal(ClaimStatus.Rejected, rejected.Status);
+        Assert.Equal(RejectionReason.LimitExhausted, rejected.RejectionReason);
+        Assert.Null(rejected.ApprovedPayout);
+        var stored = await GetClaimAsync(second.Id);
+        Assert.Equal(ClaimStatus.Rejected, stored.Status);
+        var history = await (await Manager.GetAsync($"/claims/{second.Id}/history")).ReadOkAsync<List<ClaimHistoryEntryDto>>();
+        Assert.Equal(ClaimStatus.Approved, history[^1].FromStatus);
+        Assert.EndsWith("Holder informed by letter.", history[^1].Note, StringComparison.Ordinal);
+        await (await Manager.PostEmptyAsync($"/claims/{second.Id}/pay")).AssertProblemAsync(HttpStatusCode.Conflict, "invalid_transition");
     }
 
     [Fact]

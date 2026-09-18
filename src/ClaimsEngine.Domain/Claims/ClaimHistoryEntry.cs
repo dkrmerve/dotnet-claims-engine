@@ -5,6 +5,9 @@ namespace ClaimsEngine.Domain.Claims;
 /// <summary>One line of the audit trail. Rule 11: every transition appends one.</summary>
 public sealed class ClaimHistoryEntry
 {
+    /// <summary>Upper bound of a stored audit line: the caller's note plus the prefix the claim adds to it.</summary>
+    public const int MaxNoteLength = 2_000;
+
     // EF Core materialisation.
     private ClaimHistoryEntry()
     {

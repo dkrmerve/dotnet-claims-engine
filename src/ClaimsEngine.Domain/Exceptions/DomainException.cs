@@ -78,6 +78,7 @@ public static class ErrorCodes
     public const string PolicyNotEligible = "policy_not_eligible";
     public const string IdempotencyKeyReused = "idempotency_key_reused";
     public const string LimitExhausted = "limit_exhausted";
+    public const string LimitNotExhausted = "limit_not_exhausted";
     public const string InvestigationPending = "investigation_pending";
     public const string FlagNotSet = "flag_not_set";
     public const string RejectionNoteRequired = "rejection_note_required";

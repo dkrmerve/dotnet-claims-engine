@@ -75,7 +75,7 @@ public static class ClaimEndpoints
             .RequireAuthorization(AuthorizationPolicies.AdjusterOrAbove)
             .AddEndpointFilter(new ValidationFilter<RejectClaimRequest>())
             .WithName("RejectClaim")
-            .WithSummary("Submitted|UnderReview -> Rejected with a mandatory reason (Adjuster+).")
+            .WithSummary("Submitted|UnderReview -> Rejected with a mandatory reason (Adjuster+). Approved -> Rejected only by a Manager, as LimitExhausted, when the payout no longer fits the annual limit.")
             .ProducesProblem(StatusCodes.Status400BadRequest)
             .ProducesProblem(StatusCodes.Status409Conflict);
 

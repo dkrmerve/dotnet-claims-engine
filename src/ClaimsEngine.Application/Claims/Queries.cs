@@ -33,11 +33,14 @@ public sealed class ListClaimsHandler(IClaimRepository claims)
 {
     public const int MaxPageSize = 100;
 
+    /// <summary>Highest page whose row offset ((page - 1) * pageSize) still fits a 32-bit OFFSET at any page size.</summary>
+    public const int MaxPage = int.MaxValue / MaxPageSize;
+
     public async Task<PagedResponse<ClaimDto>> HandleAsync(ListClaimsQuery query, CancellationToken cancellationToken = default)
     {
-        if (query.Page < 1)
+        if (query.Page is < 1 or > MaxPage)
         {
-            throw new ValidationException("page must be at least 1.");
+            throw new ValidationException($"page must be between 1 and {MaxPage}.");
         }
 
         if (query.PageSize is < 1 or > MaxPageSize)
