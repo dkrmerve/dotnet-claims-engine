@@ -1,0 +1,35 @@
+## .NET
+bin/
+obj/
+out/
+publish/
+*.user
+*.suo
+*.swp
+*.userprefs
+.vs/
+.vscode/
+.idea/
+*.DotSettings.user
+TestResults/
+*.trx
+*.coverage
+*.coveragexml
+coverage*.json
+coverage*.xml
+BenchmarkDotNet.Artifacts/
+artifacts/
+launchSettings.json
+*.pubxml
+*.publishsettings
+
+## OS
+.DS_Store
+Thumbs.db
+
+## Docker / local env
+.env
+*.env.local
+
+## Seed script state
+scripts/.seed-state.env
