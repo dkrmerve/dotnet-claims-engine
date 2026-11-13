@@ -36,7 +36,7 @@ RUN dotnet publish src/ClaimsEngine.Api/ClaimsEngine.Api.csproj -c Release --no-
 # ---------------------------------------------------------------------------
 # Runtime stage: ASP.NET Core runtime only, non-root, workstation GC.
 # ---------------------------------------------------------------------------
-FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:11.0 AS runtime
 WORKDIR /app
 ENV ASPNETCORE_HTTP_PORTS=8080 \
     DOTNET_gcServer=0 \
